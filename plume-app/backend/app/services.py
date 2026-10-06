@@ -6,8 +6,17 @@ import math
 import numpy as np
 
 from .config import settings
-from .dispersion import STABILITY_CLASSES, parameterization_metadata
-from .gaussian import CalmWindError, PlumeInputError, compute_plume_field
+from .dispersion import (
+    STABILITY_CLASSES,
+    STABILITY_DESCRIPTIONS,
+    parameterization_metadata,
+)
+from .gaussian import (
+    CalmWindError,
+    PlumeInputError,
+    compute_plume_field,
+    ensure_wind_speed_ok,
+)
 from .geometry import (
     local_to_lonlat,
     local_to_plume_coords,
@@ -20,7 +29,9 @@ from .schemas import (
     GridSpec,
     MeteorologyInput,
     PlumeGridRequest,
+    PlumePointRequest,
     SourceInput,
+    StabilitySweepRequest,
 )
 
 DISCLAIMER = (
@@ -278,3 +289,189 @@ def run_points(req: "PlumePointRequest") -> list[dict]:
             }
         )
     return out
+
+
+# 稳定度扫描的受体距离上限与采样网格半宽一致（局部平面近似适用范围）
+SWEEP_MAX_DISTANCE_M = settings.grid_max_half_extent_m
+
+
+def _receptor_range_flag(
+    distance_m: float, parameterization: str
+) -> tuple[bool | None, str]:
+    """受体距离的适用范围标记。
+
+    Briggs 乡村系数建议 x ∈ [100 m, 10 km]；范围外照常计算但显式标注，
+    仅作趋势演示。幂律为解析核对方案，无官方适用范围，标记为 None。
+    """
+    if parameterization == "briggs_rural":
+        lo = settings.briggs_valid_x_min_m
+        hi = settings.briggs_valid_x_max_m
+        if distance_m < lo:
+            return False, "below_briggs_valid_range"
+        if distance_m > hi:
+            return False, "above_briggs_valid_range"
+        return True, "within_briggs_valid_range"
+    return None, "no_official_valid_range"
+
+
+def run_stability_sweep(req: StabilitySweepRequest) -> dict:
+    """稳定度扫描：固定源项/风速/风向，逐稳定度在一组下风向受体上求值。
+
+    设计约束：
+    * 独立试算——只用请求中源/气象的副本，不读取、不写回任何已保存情景；
+    * 全部校验（距离合法性、静风）在任何浓度计算之前完成，
+      失败即整体 422，不产生部分结果、不保存任何记录；
+    * 每个 (稳定度, 受体) 的浓度通过 run_points 求值——与
+      POST /api/plume/points 单点求值完全同一代码路径，可逐列核对。
+    """
+    # ---- 1) 受体距离校验：任一非法即整体失败 ----
+    distances: list[float] = []
+    for d in req.receptor_distances_m:
+        if not math.isfinite(d):
+            raise PlumeInputError(f"受体距离含非有限值: {d!r}")
+        if d <= 0.0:
+            raise PlumeInputError(
+                f"受体距离必须为正的下风向距离，收到 {d:g} m"
+            )
+        if d > SWEEP_MAX_DISTANCE_M:
+            raise PlumeInputError(
+                f"受体距离 {d:g} m 超出本模型平面近似允许的上限 "
+                f"{SWEEP_MAX_DISTANCE_M:g} m"
+            )
+        distances.append(float(d))
+
+    src, met = merge_overrides(req)
+    # ---- 2) 静风前置拦截（与 compute_plume_field 同一校验函数）----
+    ensure_wind_speed_ok(met.wind_speed_ms, req.calm_threshold_ms)
+
+    # ---- 3) 受体：下风向距离 -> 真实经纬度（沿输运方位角）----
+    theta = math.radians(transport_bearing_deg(met.wind_from_deg))
+    receptors: list[dict] = []
+    for d in distances:
+        e = d * math.sin(theta)
+        n = d * math.cos(theta)
+        lon, lat = local_to_lonlat(e, n, src.lon, src.lat)
+        receptors.append(
+            {
+                "distance_m": d,
+                "lonlat": [float(lon), float(lat)],
+                "east_north_m": [float(e), float(n)],
+            }
+        )
+
+    h_eff, rise_detail = effective_height(src, met, req.plume_rise.use_plume_rise)
+    classes = list(req.stability_classes) if req.stability_classes else list(STABILITY_CLASSES)
+
+    # ---- 4) 逐稳定度求值（复用单点求值路径，保证可逐列核对）----
+    results: list[dict] = []
+    for stab in classes:
+        met_s = met.model_copy(update={"stability_class": stab})
+        point_req = PlumePointRequest(
+            source=src,
+            meteorology=met_s,
+            points=[tuple(r["lonlat"]) for r in receptors],
+            plume_rise=req.plume_rise,
+            parameterization=req.parameterization,
+            power_law=req.power_law,
+            calm_threshold_ms=req.calm_threshold_ms,
+        )
+        pts = run_points(point_req)
+        points_out: list[dict] = []
+        for rec, p in zip(receptors, pts):
+            in_range, flag = _receptor_range_flag(
+                rec["distance_m"], req.parameterization
+            )
+            points_out.append(
+                {
+                    "distance_m": rec["distance_m"],
+                    "plume_conc_ug_m3": p["plume_conc_ug_m3"],
+                    "background_conc_ug_m3": p["background_conc_ug_m3"],
+                    "total_conc_ug_m3": p["total_conc_ug_m3"],
+                    "sigma_y_m": p["sigma_y_m"],
+                    "sigma_z_m": p["sigma_z_m"],
+                    "within_valid_range": in_range,
+                    "range_flag": flag,
+                }
+            )
+        peak = max(points_out, key=lambda p: p["total_conc_ug_m3"])
+        results.append(
+            {
+                "stability_class": stab,
+                "stability_cn": STABILITY_DESCRIPTIONS[stab]["name_cn"],
+                "points": points_out,
+                "peak_on_receptors": {
+                    "distance_m": peak["distance_m"],
+                    "plume_conc_ug_m3": peak["plume_conc_ug_m3"],
+                    "total_conc_ug_m3": peak["total_conc_ug_m3"],
+                    "sampled_on_receptors": True,
+                    "note": "所给受体点中的最大值，非连续峰值的解析解",
+                },
+            }
+        )
+
+    if req.parameterization == "briggs_rural":
+        coefficients: dict = {
+            "parameterization": "briggs_rural",
+            "per_stability": parameterization_metadata(),
+        }
+        valid_range = [
+            settings.briggs_valid_x_min_m,
+            settings.briggs_valid_x_max_m,
+        ]
+    else:
+        pl = req.power_law or {}
+        coefficients = {
+            "parameterization": "power_law",
+            "formula": "sigma_y = ay*x^py; sigma_z = az*x^pz",
+            "coeffs": {
+                "ay": pl.get("ay", 0.22),
+                "py": pl.get("py", 1.0),
+                "az": pl.get("az", 0.16),
+                "pz": pl.get("pz", 1.0),
+            },
+        }
+        valid_range = None
+
+    return {
+        "source_lonlat": [src.lon, src.lat],
+        "wind": {
+            **wind_transform_check(met.wind_from_deg),
+            "wind_speed_ms": met.wind_speed_ms,
+        },
+        "receptors": receptors,
+        "stability_classes": classes,
+        "background_conc_ug_m3": met.background_conc_ug_m3,
+        "effective_stack_height_m": float(h_eff),
+        "plume_rise_delta_h_m": float(rise_detail["delta_h_m"]),
+        "results": results,
+        "units": {
+            "distance": "m",
+            "concentration": "μg/m³",
+            "sigma": "m",
+            "emission_rate": "g/s",
+            "wind_speed": "m/s",
+            "conversion": "g → μg 系数 1e6",
+        },
+        "coefficients": coefficients,
+        "validity": {
+            "model": "steady-state Gaussian plume, flat terrain, full ground reflection",
+            "briggs_valid_range_m": valid_range,
+            "out_of_range_policy": (
+                "适用范围外的受体照常返回数值并以 range_flag 显式标注，"
+                "仅作趋势演示，不作为精确预测"
+            ),
+            "peak_note": (
+                "peak_on_receptors 为所给受体点中的最大值（采样峰值），"
+                "不是连续峰值的解析位置"
+            ),
+            "evaluation_path": (
+                "与 POST /api/plume/points 相同的求值代码路径，"
+                "同一受体经纬度、同一稳定度下二者逐列一致"
+            ),
+        },
+        "trial_note": (
+            "独立试算：仅使用请求中源/气象的副本逐稳定度求值，"
+            "不读取、不写回任何已保存气象情景，不产生保存记录。"
+        ),
+        "disclaimer": DISCLAIMER,
+    }

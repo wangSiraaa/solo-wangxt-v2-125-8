@@ -41,6 +41,24 @@ class PlumeInputError(ValueError):
     """输入参数不合法。"""
 
 
+def ensure_wind_speed_ok(wind_speed_ms: float, calm_threshold_ms: float) -> None:
+    """风速校验：静风是硬错误，绝不硬算。
+
+    供 compute_plume_field 与稳定度扫描等批量试算共用，
+    保证所有入口的拦截语义与错误措辞完全一致。
+    """
+    if wind_speed_ms is None or not np.isfinite(wind_speed_ms):
+        raise PlumeInputError("风速缺失或非有限值")
+    if wind_speed_ms < 0:
+        raise PlumeInputError("风速不能为负")
+    if wind_speed_ms < calm_threshold_ms:
+        raise CalmWindError(
+            f"风速 {wind_speed_ms:.3g} m/s 低于静风阈值 "
+            f"{calm_threshold_ms:.3g} m/s：定常高斯烟羽的输运假设失效，"
+            "本模型拒绝计算（不使用近零风速除出巨大浓度）。"
+        )
+
+
 def compute_plume_field(
     emission_rate_g_s: float,
     wind_speed_ms: float,
@@ -61,16 +79,7 @@ def compute_plume_field(
     返回 dict：field（同形数组）、diagnostics。
     """
     # ---- 输入校验：静风是硬错误，绝不硬算 ----
-    if wind_speed_ms is None or not np.isfinite(wind_speed_ms):
-        raise PlumeInputError("风速缺失或非有限值")
-    if wind_speed_ms < 0:
-        raise PlumeInputError("风速不能为负")
-    if wind_speed_ms < calm_threshold_ms:
-        raise CalmWindError(
-            f"风速 {wind_speed_ms:.3g} m/s 低于静风阈值 "
-            f"{calm_threshold_ms:.3g} m/s：定常高斯烟羽的输运假设失效，"
-            "本模型拒绝计算（不使用近零风速除出巨大浓度）。"
-        )
+    ensure_wind_speed_ok(wind_speed_ms, calm_threshold_ms)
     if emission_rate_g_s < 0:
         raise PlumeInputError("排放率不能为负")
     if effective_height_m < 0:

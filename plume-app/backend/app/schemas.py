@@ -121,3 +121,56 @@ class PlumePointRequest(PlumeGridRequest):
 
 class PlumePointResponse(BaseModel):
     points: list[dict]
+
+
+class StabilitySweepRequest(BaseModel):
+    """稳定度扫描（独立试算）。
+
+    固定源项、风速、风向与一组下风向受体距离（真实坐标，沿输运方位角
+    换算为经纬度），对若干 Pasquill 稳定度逐一求值。
+    ``meteorology.stability_class`` 仅作占位，实际被扫描的稳定度覆盖；
+    整个请求只读取源/气象副本，不写回任何已保存情景。
+    """
+
+    source: SourceInput
+    meteorology: MeteorologyInput
+    receptor_distances_m: list[float] = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="下风向受体距离（m，正数），按真实坐标沿输运方向放置",
+    )
+    stability_classes: list[StabilityClass] | None = Field(
+        None, description="要扫描的稳定度；缺省为全部 A–F"
+    )
+    plume_rise: PlumeRiseInput = Field(default_factory=PlumeRiseInput)
+    source_override: SourceOverride | None = None
+    met_override: MetOverride | None = None
+    parameterization: Literal["briggs_rural", "power_law"] = "briggs_rural"
+    power_law: dict | None = Field(
+        None,
+        description="power_law 参数: ay, py, az, pz（均为正）",
+    )
+    calm_threshold_ms: float = Field(1.0, gt=0.0, le=5.0)
+
+
+class StabilitySweepResponse(BaseModel):
+    """扫描结果：每个稳定度 × 每个受体的烟羽/背景/总浓度分列。
+
+    与 POST /api/plume/points 走同一求值代码路径，可逐列核对；
+    适用范围外的点显式标注 range_flag，不伪装为精确预测。
+    """
+
+    source_lonlat: tuple[float, float]
+    wind: dict
+    receptors: list[dict]
+    stability_classes: list[str]
+    background_conc_ug_m3: float
+    effective_stack_height_m: float
+    plume_rise_delta_h_m: float
+    results: list[dict]
+    units: dict
+    coefficients: dict
+    validity: dict
+    trial_note: str
+    disclaimer: str

@@ -135,3 +135,160 @@ def test_power_law_peak_location_analytic():
     x = data["grid"]["x_edges_m"][ix]
     expected = 60.0 / (math.sqrt(2) * 0.16)
     assert abs(x - expected) / expected < 0.02
+
+
+# ---------- 稳定度扫描（独立试算） ----------
+
+SWEEP_DISTANCES = [100.0, 300.0, 800.0, 1500.0, 3000.0, 6000.0, 10000.0]
+
+
+def _sweep_payload(wind_speed=4.0, wind_from=270.0, bg=10.0,
+                   distances=None, classes=None, parameterization="briggs_rural"):
+    base = _base_payload(wind_speed=wind_speed, wind_from=wind_from, bg=bg)
+    return {
+        "source": base["source"],
+        "meteorology": base["meteorology"],
+        "receptor_distances_m": distances if distances is not None else SWEEP_DISTANCES,
+        "stability_classes": classes,
+        "parameterization": parameterization,
+        "calm_threshold_ms": 1.0,
+    }
+
+
+def test_sweep_matches_point_evaluation_column_by_column():
+    """验收：同一距离可逐列核对到单点求值。
+
+    扫描结果中每个 (稳定度, 受体) 的烟羽/背景/总浓度，必须与
+    /api/plume/points 在同一受体经纬度、同一稳定度下的单点求值一致。
+    """
+    resp = client.post("/api/plume/stability-sweep", json=_sweep_payload())
+    assert resp.status_code == 200, resp.text
+    sweep = resp.json()
+    receptors = sweep["receptors"]
+    assert len(receptors) == len(SWEEP_DISTANCES)
+    # 受体确实落在下风向中心线上（横风向 ≈ 0）
+    base = _base_payload(wind_from=270.0)
+    for block in sweep["results"]:
+        stab = block["stability_class"]
+        payload = dict(base)
+        payload["meteorology"] = dict(base["meteorology"], stability_class=stab)
+        payload["points"] = [r["lonlat"] for r in receptors]
+        presp = client.post("/api/plume/points", json=payload)
+        assert presp.status_code == 200
+        pts = presp.json()["points"]
+        for got, expect, rec in zip(block["points"], pts, receptors):
+            assert got["distance_m"] == rec["distance_m"]
+            # 单点求值复核：该受体在下风向 distance 处、横风向≈0
+            assert expect["downwind_crosswind_m"][0] == pytest.approx(
+                rec["distance_m"], abs=1e-6
+            )
+            assert abs(expect["downwind_crosswind_m"][1]) < 1e-6
+            assert got["plume_conc_ug_m3"] == pytest.approx(
+                expect["plume_conc_ug_m3"], rel=1e-12
+            )
+            assert got["background_conc_ug_m3"] == expect["background_conc_ug_m3"]
+            assert got["total_conc_ug_m3"] == pytest.approx(
+                expect["total_conc_ug_m3"], rel=1e-12
+            )
+
+
+def test_sweep_three_parts_and_peak():
+    """烟羽/背景/总量分列；total = plume + bg；峰值为受体采样最大值。"""
+    sweep = client.post("/api/plume/stability-sweep", json=_sweep_payload()).json()
+    assert sweep["background_conc_ug_m3"] == 10.0
+    for block in sweep["results"]:
+        pts = block["points"]
+        for p in pts:
+            assert p["background_conc_ug_m3"] == 10.0
+            assert p["total_conc_ug_m3"] == pytest.approx(
+                p["plume_conc_ug_m3"] + 10.0, rel=1e-12
+            )
+        peak = block["peak_on_receptors"]
+        assert peak["sampled_on_receptors"] is True
+        assert peak["total_conc_ug_m3"] == max(p["total_conc_ug_m3"] for p in pts)
+        assert peak["distance_m"] in SWEEP_DISTANCES
+    # 峰值的稳定度排序教学结论：同一组受体上各稳定度峰值位置不全相同
+    peaks = {b["stability_class"]: b["peak_on_receptors"]["distance_m"]
+             for b in sweep["results"]}
+    assert len(set(peaks.values())) > 1
+
+
+def test_sweep_out_of_range_flagged_not_hidden():
+    """适用范围外的点被显式标注，但仍返回数值（不伪装为精确预测）。"""
+    payload = _sweep_payload(distances=[50.0, 500.0, 20000.0])
+    sweep = client.post("/api/plume/stability-sweep", json=payload).json()
+    assert sweep["validity"]["briggs_valid_range_m"] == [100.0, 10000.0]
+    for block in sweep["results"]:
+        p50, p500, p20k = block["points"]
+        assert p50["within_valid_range"] is False
+        assert p50["range_flag"] == "below_briggs_valid_range"
+        assert p500["within_valid_range"] is True
+        assert p20k["within_valid_range"] is False
+        assert p20k["range_flag"] == "above_briggs_valid_range"
+        # 范围外仍给出数值（趋势演示），不是 0/None 伪装
+        assert p50["total_conc_ug_m3"] >= 0.0
+        assert p20k["total_conc_ug_m3"] > 0.0
+
+
+def test_sweep_power_law_marks_no_official_range():
+    payload = _sweep_payload(distances=[50.0, 500.0], parameterization="power_law")
+    payload["power_law"] = {"ay": 0.22, "py": 1.0, "az": 0.16, "pz": 1.0}
+    sweep = client.post("/api/plume/stability-sweep", json=payload).json()
+    assert sweep["validity"]["briggs_valid_range_m"] is None
+    assert sweep["coefficients"]["coeffs"]["az"] == 0.16
+    for block in sweep["results"]:
+        for p in block["points"]:
+            assert p["within_valid_range"] is None
+            assert p["range_flag"] == "no_official_valid_range"
+
+
+def test_sweep_calm_wind_fails_without_partial_result():
+    """静风：整个试算 422，无部分结果。"""
+    resp = client.post(
+        "/api/plume/stability-sweep", json=_sweep_payload(wind_speed=0.3)
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "calm_wind"
+    assert "results" not in resp.json()
+
+
+@pytest.mark.parametrize("bad", [[0.0, 500.0], [-100.0, 500.0],
+                                 [500.0, 60_000.0], []])
+def test_sweep_invalid_distance_fails_without_partial_result(bad):
+    """非法距离（非正/超限/空表）：整体 422，无部分保存记录。"""
+    resp = client.post(
+        "/api/plume/stability-sweep", json=_sweep_payload(distances=bad)
+    )
+    assert resp.status_code == 422
+    assert "results" not in resp.json()
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_sweep_non_finite_distance_rejected(literal):
+    """非有限距离（JSON 扩展字面量 NaN/Infinity）：服务层拦截，整体 422。"""
+    import json as _json
+
+    body = _json.dumps(_sweep_payload(distances=[500.0])).replace(
+        "[500.0]", f"[{literal}]"
+    )
+    resp = client.post(
+        "/api/plume/stability-sweep",
+        content=body,
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 422
+    assert "results" not in resp.json()
+
+
+def test_sweep_does_not_modify_saved_scenarios():
+    """独立试算：扫描前后已保存气象情景逐条一致。"""
+    before = client.get("/api/meteorology").json()
+    payload = _sweep_payload(classes=["A", "F"])
+    payload["met_override"] = {"wind_speed_ms": 7.0, "stability_class": "B"}
+    resp = client.post("/api/plume/stability-sweep", json=payload)
+    assert resp.status_code == 200, resp.text
+    sweep = resp.json()
+    assert sweep["stability_classes"] == ["A", "F"]
+    assert sweep["wind"]["wind_speed_ms"] == 7.0
+    after = client.get("/api/meteorology").json()
+    assert before == after

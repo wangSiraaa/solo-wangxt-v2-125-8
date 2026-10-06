@@ -4,6 +4,8 @@ import type {
   PlumeGridRequest,
   PlumeGridResponse,
   SourceRow,
+  StabilitySweepRequest,
+  StabilitySweepResponse,
 } from './types'
 
 async function jsonOrThrow<T>(resp: Response): Promise<T> {
@@ -40,5 +42,11 @@ export const api = {
     fetch(
       `/api/plume/wind-check?wind_from_deg=${encodeURIComponent(windFromDeg)}`,
     ).then((r) => jsonOrThrow<any>(r)),
+  stabilitySweep: (req: StabilitySweepRequest) =>
+    fetch('/api/plume/stability-sweep', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    }).then((r) => jsonOrThrow<StabilitySweepResponse>(r)),
   checks: () => fetch('/api/checks').then((r) => jsonOrThrow<ChecksReport>(r)),
 }

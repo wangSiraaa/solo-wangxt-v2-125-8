@@ -116,3 +116,86 @@ export interface ApiError {
   message: string
   action?: string
 }
+
+/* ---------- 稳定度扫描（独立试算） ---------- */
+
+export interface StabilitySweepRequest {
+  source: SourceInput
+  meteorology: MeteorologyInput
+  receptor_distances_m: number[]
+  stability_classes?: StabilityClass[] | null
+  plume_rise: { use_plume_rise: boolean }
+  source_override?: Record<string, number | null>
+  met_override?: Record<string, number | string | null>
+  parameterization: 'briggs_rural' | 'power_law'
+  power_law?: { ay: number; py: number; az: number; pz: number } | null
+  calm_threshold_ms: number
+}
+
+export interface SweepReceptor {
+  distance_m: number
+  lonlat: [number, number]
+  east_north_m: [number, number]
+}
+
+export interface SweepPoint {
+  distance_m: number
+  plume_conc_ug_m3: number
+  background_conc_ug_m3: number
+  total_conc_ug_m3: number
+  sigma_y_m: number
+  sigma_z_m: number
+  within_valid_range: boolean | null
+  range_flag: string
+}
+
+export interface SweepStabilityResult {
+  stability_class: StabilityClass
+  stability_cn: string
+  points: SweepPoint[]
+  peak_on_receptors: {
+    distance_m: number
+    plume_conc_ug_m3: number
+    total_conc_ug_m3: number
+    sampled_on_receptors: boolean
+    note: string
+  }
+}
+
+export interface StabilitySweepResponse {
+  source_lonlat: [number, number]
+  wind: {
+    wind_from_deg: number
+    transport_bearing_deg: number
+    interpretation: string
+    wind_speed_ms: number
+  }
+  receptors: SweepReceptor[]
+  stability_classes: StabilityClass[]
+  background_conc_ug_m3: number
+  effective_stack_height_m: number
+  plume_rise_delta_h_m: number
+  results: SweepStabilityResult[]
+  units: Record<string, string>
+  coefficients: {
+    parameterization: string
+    per_stability?: {
+      stability: string
+      stability_cn: string
+      sigma_y: string
+      sigma_z_form: string
+      sigma_z_constants: Record<string, number>
+      x_valid_range_m: [number, number]
+    }[]
+    formula?: string
+    coeffs?: { ay: number; py: number; az: number; pz: number }
+  }
+  validity: {
+    briggs_valid_range_m: [number, number] | null
+    out_of_range_policy: string
+    peak_note: string
+    evaluation_path: string
+  }
+  trial_note: string
+  disclaimer: string
+}

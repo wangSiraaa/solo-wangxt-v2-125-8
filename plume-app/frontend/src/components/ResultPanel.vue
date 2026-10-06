@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
-import type { ChecksReport, PlumeGridResponse } from '../types'
+import type { ChecksReport, PlumeGridResponse, SourceRow } from '../types'
+import type { FormState } from '../form'
 import { api } from '../api'
 import { legendStops } from '../colors'
+import SweepPanel from './SweepPanel.vue'
 
 const props = defineProps<{
   result: PlumeGridResponse | null
   error: string | null
+  form: FormState
+  currentSource: SourceRow | null
 }>()
 
-const tab = ref<'result' | 'wind' | 'checks'>('result')
+const tab = ref<'result' | 'wind' | 'checks' | 'sweep'>('result')
 const checks = ref<ChecksReport | null>(null)
 const checksError = ref('')
 const windInput = ref(270)
@@ -62,6 +66,9 @@ function fmt(v: number, d = 2) {
       <button :class="{ active: tab === 'result' }" @click="tab = 'result'">
         结果分解
       </button>
+      <button :class="{ active: tab === 'sweep' }" @click="tab = 'sweep'">
+        稳定度扫描
+      </button>
       <button :class="{ active: tab === 'wind' }" @click="tab = 'wind'">
         风向换算检查
       </button>
@@ -69,6 +76,10 @@ function fmt(v: number, d = 2) {
         解析核对
       </button>
     </div>
+
+    <template v-if="tab === 'sweep'">
+      <SweepPanel :form="form" :source="currentSource" />
+    </template>
 
     <template v-if="tab === 'result'">
       <div v-if="error" class="notice err">{{ error }}</div>
