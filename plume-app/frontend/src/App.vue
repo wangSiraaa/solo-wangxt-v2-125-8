@@ -24,6 +24,9 @@ const showIso = ref(true)
 const showBg = ref(true)
 
 const isCalm = computed(() => form.value.windSpeed < form.value.calmThreshold)
+const currentSource = computed(
+  () => sources.value.find((x) => x.id === form.value.sourceId) ?? null,
+)
 
 onMounted(async () => {
   try {
@@ -217,6 +220,6 @@ const stops = computed(() =>
       </div>
     </div>
 
-    <ResultPanel :result="result" :error="error" />
+    <ResultPanel :result="result" :error="error" :form="form" :source="currentSource" />
   </div>
 </template>

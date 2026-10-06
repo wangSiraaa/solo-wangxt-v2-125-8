@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
-import type { ChecksReport, PlumeGridResponse } from '../types'
+import type { ChecksReport, PlumeGridResponse, SourceRow } from '../types'
+import type { FormState } from '../form'
 import { api } from '../api'
 import { legendStops } from '../colors'
+import SweepPanel from './SweepPanel.vue'
 
 const props = defineProps<{
   result: PlumeGridResponse | null
   error: string | null
+  form: FormState
+  source: SourceRow | null
 }>()
 
-const tab = ref<'result' | 'wind' | 'checks'>('result')
+const tab = ref<'result' | 'wind' | 'checks' | 'sweep'>('result')
 const checks = ref<ChecksReport | null>(null)
 const checksError = ref('')
 const windInput = ref(270)
@@ -67,6 +71,9 @@ function fmt(v: number, d = 2) {
       </button>
       <button :class="{ active: tab === 'checks' }" @click="tab = 'checks'">
         解析核对
+      </button>
+      <button :class="{ active: tab === 'sweep' }" data-test="tab-sweep" @click="tab = 'sweep'">
+        稳定度扫描
       </button>
     </div>
 
@@ -225,6 +232,10 @@ function fmt(v: number, d = 2) {
         </div>
         <button class="ghost" @click="loadChecks">重新运行核对</button>
       </div>
+    </template>
+
+    <template v-if="tab === 'sweep'">
+      <SweepPanel :form="form" :source="source" />
     </template>
   </div>
 </template>

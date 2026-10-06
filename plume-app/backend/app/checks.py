@@ -325,6 +325,61 @@ def check_resolution_independence() -> dict:
     )
 
 
+def check_sweep_point_consistency() -> dict:
+    """稳定度扫描（独立试算）与单点求值必须逐列一致。"""
+    from .schemas import (
+        MeteorologyInput,
+        PlumePointRequest,
+        SourceInput,
+        StabilitySweepRequest,
+    )
+    from .services import run_points, run_stability_sweep
+
+    src = SourceInput(
+        name="核对源", lon=LON0, lat=LAT0,
+        stack_height_m=H_M, emission_rate_g_s=Q_G_S,
+    )
+    met = MeteorologyInput(
+        name="核对气象", wind_from_deg=270.0, wind_speed_ms=U_MS,
+        stability_class="D", background_conc_ug_m3=3.0,
+    )
+    distances = [150.0, 600.0, 2500.0]
+    theta = math.radians((270.0 + 180.0) % 360.0)
+    receptors = []
+    for d in distances:
+        lo, la = local_to_lonlat(
+            d * math.sin(theta), d * math.cos(theta), LON0, LAT0
+        )
+        receptors.append((float(lo), float(la)))
+    sweep = run_stability_sweep(
+        StabilitySweepRequest(source=src, meteorology=met, receptors=receptors)
+    )
+    max_rel = 0.0
+    for stab in sweep["results"]:
+        met_cls = met.model_copy(update={"stability_class": stab["stability"]})
+        out = run_points(
+            PlumePointRequest(source=src, meteorology=met_cls, points=receptors)
+        )
+        for row, p in zip(stab["rows"], out):
+            for a, b in (
+                (row["plume_ug_m3"], p["plume_conc_ug_m3"]),
+                (row["background_ug_m3"], p["background_conc_ug_m3"]),
+                (row["total_ug_m3"], p["total_conc_ug_m3"]),
+            ):
+                max_rel = max(max_rel, abs(a - b) / max(abs(b), 1e-30))
+    return _result(
+        "sweep_point_consistency",
+        "稳定度扫描 ↔ 单点求值逐列一致",
+        "稳定度扫描（固定源与风的独立试算）在每个受体距离上的"
+        "烟羽/背景/总量，必须与同稳定度的单点求值完全一致。",
+        max_rel == 0.0,
+        "相对偏差 = 0（同一模型入口）",
+        f"最大相对偏差 {max_rel:.2e}",
+        0.0,
+        {"distances_m": distances, "n_stability": len(sweep["results"])},
+    )
+
+
 def check_background_separate() -> dict:
     from .schemas import (
         GridSpec,
@@ -373,6 +428,7 @@ ALL_CHECKS = [
     check_calm_wind,
     check_resolution_independence,
     check_background_separate,
+    check_sweep_point_consistency,
 ]
 
 

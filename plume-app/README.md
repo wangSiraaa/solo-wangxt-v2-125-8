@@ -94,7 +94,16 @@ C(x,y,0) = Q / (π·u·σy·σz) · exp(−y²/(2σy²)) · exp(−He²/(2σz²)
 5. **网格分辨率只改变采样**：源/气象输入是独立对象，
    界面调整通过 override 合并、不改数据库；改 nx/ny 不改变任何物理输入，
    固定物理点的浓度与分辨率无关（见解析核对 #9）。
-6. **地图展示采样范围**：虚线矩形是采样边界，角点经纬度随响应返回；
+6. **稳定度扫描是独立试算**：`POST /api/plume/stability-sweep` 固定源项、
+   风速、风向与一组按真实坐标（经纬度）定义的下风向受体，仅替换稳定度
+   A–F 批量求值（烟羽/背景/总量分列）。它不读取、不写回已保存气象情景，
+   结果不保存；静风或任一受体距离非法（x≤0）即整体 422，**不产生部分结果**。
+   扫描与单点求值共用同一模型入口，同一距离可逐列精确核对（解析核对 #11）；
+   超出 Briggs 建议范围（0.1–10 km）或平面近似尺度（30 km）的受体逐行打
+   标记，数值仍返回但仅作趋势演示，不伪装为精确预测。前端“稳定度扫描”
+   页签绘制距离曲线与峰值位置（中心线加密扫描 + 黄金分割求精），并可导出
+   带单位、系数与适用范围标记的 CSV。
+7. **地图展示采样范围**：虚线矩形是采样边界，角点经纬度随响应返回；
    右上角标注节点数与间距，等值线为网格内线性插值，**不外推、不暗示无限精度**。
 
 ## 4. 解析核对用例
@@ -113,11 +122,12 @@ C(x,y,0) = Q / (π·u·σy·σz) · exp(−y²/(2σy²)) · exp(−He²/(2σz²)
 | 静风拦截 | u=0.3 m/s 必须抛 CalmWindError |
 | 分辨率无关 | 粗/细网格在同一物理格点浓度相同 |
 | 背景分开 | total = plume + bg 处处成立 |
+| 扫描↔单点一致 | 稳定度扫描在每个受体距离上与单点求值逐列一致（相对差 = 0） |
 
 运行后端测试：
 
 ```bash
-cd backend && python3 -m pytest tests/ -q     # 9 passed
+cd backend && python3 -m pytest tests/ -q     # 17 passed
 ```
 
 前端工具：
@@ -138,9 +148,10 @@ GET  /api/sources[/id]           虚构排放源（PostGIS 或内存）
 GET  /api/meteorology[/id]       虚构气象情景
 POST /api/plume/grid             采样网格浓度（烟羽/背景/总量分开）
 POST /api/plume/points           任意经纬度点求值（核对用）
+POST /api/plume/stability-sweep  稳定度扫描（固定源与风，独立试算，不保存）
 GET  /api/plume/wind-check       风向↔坐标换算检查
 POST /api/plume/rise             Holland 抬升明细
-GET  /api/checks                 10 条解析核对
+GET  /api/checks                 11 条解析核对
 ```
 
 交互文档：http://localhost:8000/docs 。
@@ -153,11 +164,12 @@ backend/app/
   dispersion.py     Briggs/幂律弥散系数，显式系数与适用范围
   geometry.py       风向、E/N 平面、经纬度换算（含单位向量核对）
   plume_rise.py     Holland 抬升
-  checks.py         10 条解析核对（API 与 pytest 共用）
-  services.py       网格构造、override 合并、等值级、响应组装
+  checks.py         11 条解析核对（API 与 pytest 共用）
+  services.py       网格构造、override 合并、等值级、稳定度扫描、响应组装
   repository.py     PostGIS 仓储 / 内存回退
 frontend/src/
   components/MapView.vue       MapLibre 图层（烟羽/等值线/背景/采样框/风矢）
+  components/SweepPanel.vue    稳定度扫描（距离曲线/峰值/核对/CSV 导出）
   marching.ts                  marching squares（无第三方几何库）
 db/init.sql        PostGIS 建表 + 虚构数据
 ```

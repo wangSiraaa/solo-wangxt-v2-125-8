@@ -121,3 +121,94 @@ class PlumePointRequest(PlumeGridRequest):
 
 class PlumePointResponse(BaseModel):
     points: list[dict]
+
+
+class StabilitySweepRequest(BaseModel):
+    """稳定度扫描：固定源项与风（风速/风向/背景），仅替换稳定度。
+
+    独立试算——不读取/不写回已保存气象情景，结果不保存。
+    静风或任一受体距离非法（x<=0，即不在下风向）即整体失败，
+    不返回任何部分结果。
+    """
+
+    source: SourceInput
+    meteorology: MeteorologyInput
+    receptors: list[tuple[float, float]] = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="受体真实坐标 [[lon, lat], ...]（EPSG:4326）；"
+        "各受体的下风向距离由固定风向推算",
+    )
+    stability_classes: list[StabilityClass] | None = Field(
+        None, description="要扫描的稳定度子集；缺省为全部 A–F"
+    )
+    plume_rise: PlumeRiseInput = Field(default_factory=PlumeRiseInput)
+    source_override: SourceOverride | None = None
+    met_override: MetOverride | None = None
+    parameterization: Literal["briggs_rural", "power_law"] = "briggs_rural"
+    power_law: dict | None = Field(
+        None,
+        description="power_law 参数: ay, py, az, pz（均为正）",
+    )
+    calm_threshold_ms: float = Field(1.0, gt=0.0, le=5.0)
+
+
+class SweepReceptor(BaseModel):
+    """受体回显：真实坐标 + 推算的烟羽坐标 + 适用范围标记。"""
+
+    index: int
+    lonlat: tuple[float, float]
+    east_north_m: tuple[float, float]
+    downwind_x_m: float
+    crosswind_y_m: float
+    in_valid_range: bool | None
+    flags: list[str]
+
+
+class SweepRow(BaseModel):
+    """单个受体在单个稳定度下的浓度分解（与单点求值逐列一致）。"""
+
+    receptor_index: int
+    downwind_x_m: float
+    plume_ug_m3: float
+    background_ug_m3: float
+    total_ug_m3: float
+    sigma_y_m: float
+    sigma_z_m: float
+    in_valid_range: bool | None
+    flags: list[str]
+
+
+class SweepPeak(BaseModel):
+    """中心线峰值（加密扫描 + 黄金分割求精），附适用范围标记。"""
+
+    downwind_x_m: float
+    plume_ug_m3: float
+    background_ug_m3: float
+    total_ug_m3: float
+    in_valid_range: bool | None
+    flags: list[str]
+    method: str
+    scan_interval_m: tuple[float, float]
+
+
+class SweepStabilityResult(BaseModel):
+    stability: str
+    stability_cn: str
+    rows: list[SweepRow]
+    peak: SweepPeak
+    sampled_peak: dict
+
+
+class StabilitySweepResponse(BaseModel):
+    trial_note: str
+    source: dict
+    fixed_conditions: dict
+    units: dict
+    parameterization: dict
+    flag_legend: dict
+    stability_classes: list[str]
+    receptors: list[SweepReceptor]
+    results: list[SweepStabilityResult]
+    disclaimer: str

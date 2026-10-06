@@ -7,6 +7,7 @@ GET  /api/sources               虚构排放源
 GET  /api/meteorology           虚构气象情景
 POST /api/plume/grid            采样网格浓度（烟羽/背景/总量分开）
 POST /api/plume/points          任意经纬度点浓度（核对用）
+POST /api/plume/stability-sweep 稳定度扫描（固定源与风，独立试算，不保存）
 GET  /api/plume/wind-check      风向↔地图坐标换算检查
 POST /api/plume/rise            Holland 抬升高程明细
 GET  /api/checks                解析核对用例结果
@@ -33,8 +34,10 @@ from .schemas import (
     PlumePointRequest,
     PlumePointResponse,
     PlumeRiseInput,
+    StabilitySweepRequest,
+    StabilitySweepResponse,
 )
-from .services import DISCLAIMER, run_grid, run_points
+from .services import DISCLAIMER, run_grid, run_points, run_stability_sweep
 
 app = FastAPI(
     title="离线高斯烟羽情景教学应用 API",
@@ -167,6 +170,15 @@ def plume_grid(req: PlumeGridRequest):
 @app.post("/api/plume/points", response_model=PlumePointResponse)
 def plume_points(req: PlumePointRequest):
     return PlumePointResponse(points=run_points(req))
+
+
+@app.post("/api/plume/stability-sweep", response_model=StabilitySweepResponse)
+def stability_sweep(req: StabilitySweepRequest):
+    """稳定度扫描：固定源项与风，逐稳定度在真实坐标受体上求值。
+
+    独立试算——不写回任何已保存情景；静风/非法距离 → 422，无部分结果。
+    """
+    return run_stability_sweep(req)
 
 
 @app.get("/api/plume/wind-check")

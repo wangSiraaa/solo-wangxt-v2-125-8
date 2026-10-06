@@ -82,13 +82,115 @@ export interface PlumeGridResponse {
 export interface PlumeGridRequest {
   source: SourceInput
   meteorology: MeteorologyInput
-  grid: GridSpec
+  grid?: GridSpec
   plume_rise: { use_plume_rise: boolean }
   source_override?: Record<string, number | null>
   met_override?: Record<string, number | string | null>
   parameterization: 'briggs_rural' | 'power_law'
   power_law?: { ay: number; py: number; az: number; pz: number } | null
   calm_threshold_ms: number
+}
+
+export interface PlumePointRequest extends PlumeGridRequest {
+  points: [number, number][]
+}
+
+export interface PlumePointResult {
+  lonlat: [number, number]
+  east_north_m: [number, number]
+  downwind_crosswind_m: [number, number]
+  plume_conc_ug_m3: number
+  background_conc_ug_m3: number
+  total_conc_ug_m3: number
+  sigma_y_m: number
+  sigma_z_m: number
+}
+
+export interface StabilitySweepRequest {
+  source: SourceInput
+  meteorology: MeteorologyInput
+  receptors: [number, number][]
+  stability_classes?: StabilityClass[] | null
+  plume_rise: { use_plume_rise: boolean }
+  source_override?: Record<string, number | null>
+  met_override?: Record<string, number | string | null>
+  parameterization: 'briggs_rural' | 'power_law'
+  power_law?: { ay: number; py: number; az: number; pz: number } | null
+  calm_threshold_ms: number
+}
+
+export interface SweepReceptor {
+  index: number
+  lonlat: [number, number]
+  east_north_m: [number, number]
+  downwind_x_m: number
+  crosswind_y_m: number
+  in_valid_range: boolean | null
+  flags: string[]
+}
+
+export interface SweepRow {
+  receptor_index: number
+  downwind_x_m: number
+  plume_ug_m3: number
+  background_ug_m3: number
+  total_ug_m3: number
+  sigma_y_m: number
+  sigma_z_m: number
+  in_valid_range: boolean | null
+  flags: string[]
+}
+
+export interface SweepPeak {
+  downwind_x_m: number
+  plume_ug_m3: number
+  background_ug_m3: number
+  total_ug_m3: number
+  in_valid_range: boolean | null
+  flags: string[]
+  method: string
+  scan_interval_m: [number, number]
+}
+
+export interface SweepStabilityResult {
+  stability: StabilityClass
+  stability_cn: string
+  rows: SweepRow[]
+  peak: SweepPeak
+  sampled_peak: { receptor_index: number; downwind_x_m: number; total_ug_m3: number }
+}
+
+export interface StabilitySweepResponse {
+  trial_note: string
+  source: {
+    name: string
+    lonlat: [number, number]
+    pollutant: string
+    stack_height_m: number
+    emission_rate_g_s: number
+  }
+  fixed_conditions: {
+    wind_from_deg: number
+    transport_bearing_deg: number
+    wind_speed_ms: number
+    background_conc_ug_m3: number
+    effective_stack_height_m: number
+    plume_rise_delta_h_m: number
+    calm_threshold_ms: number
+    stability_note: string
+  }
+  units: Record<string, string>
+  parameterization: {
+    name: 'briggs_rural' | 'power_law'
+    valid_range_m: [number, number] | null
+    range_note: string
+    coefficients: any
+  }
+  flag_legend: Record<string, string>
+  stability_classes: StabilityClass[]
+  receptors: SweepReceptor[]
+  results: SweepStabilityResult[]
+  disclaimer: string
 }
 
 export interface CheckResult {
